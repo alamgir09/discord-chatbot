@@ -2,7 +2,6 @@ require('dotenv/config');
 const { Client } = require('discord.js');
 const { OpenAI } = require('openai');
 
-
 const client = new Client({
     intents: ['Guilds', 'GuildMembers', 'GuildMessages', 'MessageContent']
 });
@@ -12,93 +11,108 @@ client.on('ready', () => {
 });
 
 const IGNORE_PREFIX = "!";
-
-/* CHANNELS = General, Bot */
 const CHANNELS = ['1190528653256306780', '1190532406902542466']
-
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_KEY,
 });
 
+// Select gpt version being used
+const gptVersion = "gpt-4-1106-preview";
 
+// Create gpt assistant
+async function createAssistant() {
+    try {
+        const assistant = await openai.beta.assistants.create({
+            name: "Discord Chatbot",
+            instructions: "You are a friendly discord chatbot. Be thoughtful and kind in your responses :)",
+            tools: [{ type: "code_interpreter" }],
+            model: gptVersion,
+        });
+
+        // Additional code to use 'assistant' goes here
+        console.log("Assistant created:", assistant);
+    } catch (error) {
+        console.error("Error creating assistant:", error);
+    }
+}
+
+createAssistant();
 
 client.on('messageCreate', async (message) => {
-    if (message.author.bot) return;
-    if (message.content.startsWith(IGNORE_PREFIX)) return;
-    if (message.content.startsWith("Turn Off")) {
-        return;
-    }
+
+    if (message.author.bot || message.content.startsWith(IGNORE_PREFIX)) return;
     if (!CHANNELS.includes(message.channelId) && !message.mentions.users.has(client.user.id)) return;
     if (message.content.trim() === "") return;
-
 
     await message.channel.sendTyping();
 
     const sendTypingInterval = setInterval(() => {
         message.channel.sendTyping();
-    }, 5000)
+    }, 5000);
 
-    let conversation = [];
-    conversation.push({
-        role: 'system',
-        content: 'You\'re a friendly discord chatbot'
-    })
-
+    // Fetch previous messages for context
     let prevMessages = await message.channel.messages.fetch({ limit: 10 });
-    prevMessages.reverse();
+    prevMessages = prevMessages.reverse();
 
-    prevMessages.forEach((msg) => {
+    // Create a thread
+    const thread = await openai.beta.threads.create();
 
-        // If the msg's author was a bot and not our bot return
-        if (msg.author.bot && msg.author.id !== client.user.id) return;
-        if (msg.content.startsWith(IGNORE_PREFIX)) return;
+    // Add previous messages to the thread
+    for (let msg of prevMessages.values()) {
+        if (msg.author.bot && msg.author.id !== client.user.id) continue;
+        if (msg.content.startsWith(IGNORE_PREFIX)) continue;
+        if (msg.length == 0) continue;
+        const content = msg.content;
 
-        // Reformatting username to match OpenAI's requirements
-        const username = msg.author.username.replace(/\s+/g, '_').replace(/[^\w\s]/gi, '');
+        await openai.beta.threads.messages.create(thread.id, {
+            role: "user",
+            content: content,
+        });
+    }
 
-        // If message belongs to our bot, treat as an assistant
-        if (msg.author.id === client.user.id) {
-            conversation.push({
-                role: 'assistant',
-                name: username,
-                content: msg.content
-            })
-
-            return;
-        }
-
-        // If the message was written by the user, send it as such
-        conversation.push({
-            role: 'user',
-            name: username,
-            content: msg.content 
-        })
+    // Add the current message to the thread
+    await openai.beta.threads.messages.create(thread.id, {
+        role: 'user',
+        content: message.content
     });
 
-    const response = await openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        messages: conversation,
-    }).catch((error) => console.error('OpenAI Error:\n', error));
+    // Get a response from the assistant
+    const run = await openai.beta.threads.runs.create(thread.id, {
+        assistant_id: assistant.id,
+    });
+
+    let runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+
+    // Polling mechanism for runStatus completion
+    while (runStatus.status !== 'completed') {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        runStatus = await openai.beta.threads.runs.retrieve(thread.id, run.id);
+    }
+
+    // Get the last assistant message
+    const messages = await openai.beta.threads.messages.list(thread.id);
+    const lastMessageForRun = messages.data.filter(
+        message => message.run_id === run.id && message.role === 'assistant'
+    ).pop();
 
     clearInterval(sendTypingInterval);
 
-    if (!response) {
-        message.reply("I'm having some trouble with the GPT Api");
-        return;
+    // Reply with the assistant's message
+    if (lastMessageForRun) {
+
+        // Convert lastMessageForRun into a string
+        const responseMessage = lastMessageForRun.content[0].text.value
+
+        // Handle Discord's character limit
+        const chunkSizeLimit = 2000;
+
+        for (let i = 0; i < responseMessage.length; i += chunkSizeLimit) {
+            const chunk = responseMessage.substring(i, i + chunkSizeLimit);
+            await message.reply(chunk);
+        }
+    } else {
+        message.reply("I'm having some trouble understanding that.");
     }
-
-    // Work around Discord's 2000 character limit for our replies
-    const responseMessage = response.choices[0].message.content
-    const chunkSizeLimit = 2000;
-
-    for (let i = 0; i < responseMessage.length; i += chunkSizeLimit) {
-        const chunk = responseMessage.substring(i, i+chunkSizeLimit);
-
-        // Ensure all messages are sent in order
-        await message.reply(chunk);
-    }
-
-    message.reply();
-})
+});
 
 client.login(process.env.TOKEN);
