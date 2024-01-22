@@ -19,26 +19,17 @@ const openai = new OpenAI({
 // Select gpt version being used
 const gptVersion = "gpt-4-1106-preview";
 
-// Create gpt assistant
-async function createAssistant() {
-    try {
-        const assistant = await openai.beta.assistants.create({
-            name: "Discord Chatbot",
-            instructions: "You are a friendly discord chatbot. Be thoughtful and kind in your responses :)",
-            tools: [{ type: "code_interpreter" }],
-            model: gptVersion,
-        });
-
-        // Additional code to use 'assistant' goes here
-        console.log("Assistant created:", assistant);
-    } catch (error) {
-        console.error("Error creating assistant:", error);
-    }
-}
-
-createAssistant();
 
 client.on('messageCreate', async (message) => {
+
+    // Create gpt instance if not created yet, using gpt version requested
+    const assistant = await openai.beta.assistants.create({
+        name: "Discord Chatbot",
+        instructions: "You are a friendly discord chatbot. Be thoughtful and kind in your responses :)",
+        tools: [{ type: "code_interpreter" }],
+        model: gptVersion,
+    });
+
 
     if (message.author.bot || message.content.startsWith(IGNORE_PREFIX)) return;
     if (!CHANNELS.includes(message.channelId) && !message.mentions.users.has(client.user.id)) return;
